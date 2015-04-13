@@ -125,7 +125,7 @@ if __name__ == '__main__':
         msg = mime.from_string(sys.stdin.read())
     else:
         fp = open(args.r, 'rb')
-    msg = mime.from_string(fp.read())
+        msg = mime.from_string(fp.read())
 
     msg_file = init(msg)
 
