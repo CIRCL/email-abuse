@@ -1,0 +1,6 @@
+*.pyc
+*.swp
+*.key
+corpus
+test
+store
