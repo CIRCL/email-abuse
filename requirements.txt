@@ -1,0 +1,8 @@
+rarfile
+git+https://github.com/polera/rblwatch.git
+http://www.decalage.info/files/pdfid_PL-0.0.11b.zip
+nltk
+py7zlib
+flanker
+magic
+requests
