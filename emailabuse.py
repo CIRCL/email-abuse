@@ -23,7 +23,7 @@ import sys
 import os
 import tempfile
 import logging
-from module import ExamineHeaders, ExtractURL, Tokenizer, ArchiveZip, Payload
+from module import ExamineHeaders, ExtractURL, Tokenizer, ArchiveZip, Archive7z, ArchiveRAR, Payload
 import StringIO
 import re
 import json
@@ -76,7 +76,7 @@ def init(msg):
     return msg_file
 
 
-archive_list = [ArchiveZip]
+archive_list = [ArchiveZip, Archive7z, ArchiveRAR]
 
 
 def get_strings(payload):
@@ -103,7 +103,7 @@ def process_payload(filename, body, content_type, origin_domain, passwordlist):
             except:
                 # not an archive
                 continue
-            if len(unpacked_files) > 0:
+            if unpacked_files is not None and len(unpacked_files) > 0:
                 is_archive = True
                 break
     if not is_archive:
@@ -182,15 +182,18 @@ if __name__ == '__main__':
     if rbl_comment is not None:
         print "\tSuspicious:\t%s" % rbl_comment
     print "\n"
+    i = 0
     for results in payload_results:
         for filename, infos in results.iteritems():
-            print "\tContent type:\t%s [...]" % str(infos[0])
+            i += 1
+            print "Inspected component #%i:" % i
+            print "\tContent type:\t%s" % str(infos[0])
             print "\tMime-type:\t%s" % infos[3]
             print "\tFile name:\t%s - %s" % (filename, infos[2])
             print "\tSHA1 hash:\t%s" % infos[4]
             for parser, values in infos[6].iteritems():
-                if values[0]:
-                    # one of the parser worked
+                if values[0] and values[2]:
+                    # one of the parser worked, and the content is suspicious
                     print "\tSuspicious:\t%s" % values[3]
             if infos[7][0]:
                 print "\tVirus Total:\t%i positive detections (total scans: %i)" % (int(infos[7][1]), int(infos[7][2]))

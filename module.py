@@ -3,6 +3,7 @@
 
 from pyfaup.faup import Faup
 import re
+import py7zlib
 import os
 import logging
 import email
@@ -20,6 +21,7 @@ import requests
 import magic
 from rblwatch import RBLSearch
 from flanker.addresslib import address
+import rarfile
 
 # We do not want to initialize it twice.
 f = Faup()
@@ -68,31 +70,21 @@ class Module(object):
     def finished(self):
         logging.info("{}: exiting".format(self.name))
 
-    def error(self, details=None):
-        string = "{}: Error".format(self.name)
-        if details is not None:
-            string = '{}: {}'.format(details)
-        logging.error(string)
-
     def result(self):
         raise ImplementationRequired('You have to implement the result method in the module {}'.format(self.name))
 
     def processing(self):
-        #failed = False
-        self._processing()
-        self.finished()
-        return self.result()
-        '''try:
+        failed = False
+        try:
             self._processing()
         except Exception as e:
-            print e
             failed = True
-            self.error(e)
+            logging.exception(e)
         finally:
             self.finished()
             if failed:
                 return None
-            return self.result()'''
+            return self.result()
 
 
 class VirusTotal(Module):
@@ -497,20 +489,102 @@ class ArchiveZip(Archive):
                     if "encrypted" in str(e):
                         self.password_protected = True
                         logging.info("%s: encrypted file '%s' found in archive" % (self.name, subfile))
-                        for pw in self.passwordlist:
-                            self.archive.setpassword(pw)
-                            try:
-                                self.unpacked_files[subfile] = StringIO.StringIO(self.archive.open(subfile).read())
-                                self.password_found = True
-                                logging.info("%s: found password: %s" % (self.name, pw))
-                                break
-                            except Exception as e:
-                                if "Bad password" in str(e):
-                                    logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
-                                else:
-                                    raise ArchiveError(e)
                     else:
                         raise ArchiveError(e)
-                logging.info("%s: passing payload '%s' to decoder module" % (self.name, subfile))
+                    for pw in self.passwordlist:
+                        self.archive.setpassword(pw)
+                        try:
+                            self.unpacked_files[subfile] = StringIO.StringIO(self.archive.open(subfile).read())
+                            self.password_found = True
+                            logging.info("%s: found password: %s" % (self.name, pw))
+                            break
+                        except Exception as e:
+                            if "Bad password" in str(e):
+                                logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
+                            else:
+                                raise ArchiveError(e)
+            self.archive.close()
+            self.pseudofile.close()
+
+
+class Archive7z(Archive):
+
+    def __init__(self, pseudofile, passwordlist):
+        super(Archive7z, self).__init__('Archive-7z', pseudofile, passwordlist)
+
+    def _processing(self):
+        self.archive = py7zlib.Archive7z(self.pseudofile)
+        if self.archive is not None and self.archive.getnames() is not None:
+            logging.info("%s: Found a valid 7z archive" % self.name)
+            for subfile in self.archive.getnames():
+                self.unpacked_files[subfile] = None
+                if self.password_protected and not self.password_found:
+                    logging.info("%s: encrypted file '%s' and unable to find the password." % (self.name, subfile))
+                    break
+                try:
+                    logging.info("%s: Trying to extract %s from archive" % (self.name, subfile))
+                    self.unpacked_files[subfile] = StringIO.StringIO(self.archive.getmember(subfile).read())
+                    logging.info("%s: successfully unpacked file '%s'" % (self.name, subfile))
+                except Exception as e:
+                    if "NoPasswordGivenError" in str(type(e)):
+                        self.password_protected = True
+                        logging.info("%s: Archive is password protected" % self.name)
+                    else:
+                        raise ArchiveError(e)
+                    for pw in self.passwordlist:
+                        try:
+                            self.archive = py7zlib.Archive7z(self.pseudo_file, password=pw)
+                            self.unpacked_files[subfile] = self.archive.getmember(subfile).read()
+                            self.password_found = True
+                            logging.info("%s: found password: %s" % (self.name, pw))
+                            break
+                        except Exception as e:
+                            if "WrongPasswordError" in str(type(e)):
+                                logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
+                            else:
+                                raise ArchiveError(e)
+            self.pseudofile.close()
+
+
+class ArchiveRAR(Archive):
+
+    def __init__(self, pseudofile, passwordlist):
+        super(ArchiveRAR, self).__init__('Archive-rar', pseudofile, passwordlist)
+
+    def _processing(self):
+        self.archive = rarfile.RarFile(self.pseudofile)
+        if self.archive is not None:
+            if self.archive.needs_password():
+                self.password_protected = True
+                logging.info("%s: Archive is password protected" % self.name)
+                for pw in self.passwordlist:
+                    print pw
+                    pw = 'inf3cted'
+                    try:
+                        self.archive.setpassword(pw)
+                        self.password_found = True
+                        logging.info("%s: found password: %s" % (self.name, pw))
+                        break
+                    except Exception as e:
+                        logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
+                        # This is somehow needed.
+                        self.archive.close()
+                        self.archive = rarfile.RarFile(self.pseudofile)
+            if self.password_protected and not self.password_found:
+                # Have to change the messsage: the file list is unknown, so no subfile
+                logging.info("%s: encrypted file and unable to find the password." % (self.name))
+                return
+            print self.archive.infolist()
+            for f in self.archive.infolist():
+                subfile = f.filename
+                print subfile
+                self.unpacked_files[subfile] = None
+                try:
+                    logging.info("%s: Trying to extract %s from archive" % (self.name, subfile))
+                    # FIXME: cannot work: https://github.com/markokr/rarfile/blob/9c7ce20a00384cf237e66c2f46effdd94f8d4ca6/rarfile.py#L1189
+                    self.unpacked_files[subfile] = self.archive.read(f)
+                    logging.info("%s: successfully unpacked file '%s'" % (self.name, subfile))
+                except Exception as e:
+                    raise ArchiveError(e)
             self.archive.close()
             self.pseudofile.close()
