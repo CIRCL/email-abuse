@@ -23,6 +23,7 @@ from rblwatch import RBLSearch
 from flanker.addresslib import address
 import rarfile
 
+
 # We do not want to initialize it twice.
 f = Faup()
 
@@ -273,8 +274,11 @@ class ParseOLE(Module):
         return self.is_ole, self.has_parsed, self.is_suspicious, self.reason
 
     def _processing(self):
+        if self.content is None or len(self.content) == 0:
+            # if self.content is None or len == 0, olefile.OleFileIO doesn't crash but will fail later
+            return
         try:
-            ole = olefile.OleFileIO(self.content)
+            ole = olefile.OleFileIO(self.content, raise_defects=olefile.DEFECT_INCORRECT)
             self.is_ole = True
         except Exception as e:
             logging.info("%s: got error while opening file: %s" % (self.name, e))
@@ -438,16 +442,18 @@ class Payload(Module):
 
     def _processing(self):
         self.test_suspicious_extension()
-        self.sha1 = hashlib.sha1(self.payload.buf).hexdigest()
-        self.mimetype = magic.from_buffer(self.payload.buf)
-        extract_urls = ExtractURL(self.payload.buf, self.origin_domain)
+        h = hashlib.sha1()
+        h.update(self.payload.getvalue())
+        self.sha1 = h.hexdigest()
+        self.mimetype = magic.from_buffer(self.payload.getvalue())
+        extract_urls = ExtractURL(self.payload.getvalue(), self.origin_domain)
         self.suspicious_urls = extract_urls.processing()
         self.indicators += extract_urls.indicators
         vt = VirusTotal(self.sha1)
         self.vt_result = vt.processing()
         self.indicators += vt.indicators
         for parser in self.parser_list:
-            p = parser(self.payload.buf)
+            p = parser(self.payload.getvalue())
             self.parser_results[type(p).__name__] = p.processing()
             self.indicators += p.indicators
 
@@ -470,6 +476,7 @@ class Archive(Module):
 class ArchiveZip(Archive):
 
     def __init__(self, pseudofile, passwordlist):
+        pseudofile = StringIO.StringIO(pseudofile.getvalue())
         super(ArchiveZip, self).__init__('Archive-zip', pseudofile, passwordlist)
 
     def _processing(self):
@@ -501,6 +508,8 @@ class ArchiveZip(Archive):
                         except Exception as e:
                             if "Bad password" in str(e):
                                 logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
+                            elif "encrypted" in str(e):
+                                continue
                             else:
                                 raise ArchiveError(e)
             self.archive.close()
@@ -513,6 +522,7 @@ class Archive7z(Archive):
         super(Archive7z, self).__init__('Archive-7z', pseudofile, passwordlist)
 
     def _processing(self):
+        self.pseudofile.seek(0)
         self.archive = py7zlib.Archive7z(self.pseudofile)
         if self.archive is not None and self.archive.getnames() is not None:
             logging.info("%s: Found a valid 7z archive" % self.name)
@@ -525,24 +535,25 @@ class Archive7z(Archive):
                     logging.info("%s: Trying to extract %s from archive" % (self.name, subfile))
                     self.unpacked_files[subfile] = StringIO.StringIO(self.archive.getmember(subfile).read())
                     logging.info("%s: successfully unpacked file '%s'" % (self.name, subfile))
-                except Exception as e:
-                    if "NoPasswordGivenError" in str(type(e)):
-                        self.password_protected = True
-                        logging.info("%s: Archive is password protected" % self.name)
-                    else:
-                        raise ArchiveError(e)
+                except py7zlib.NoPasswordGivenError as e:
+                    self.password_protected = True
+                    logging.info("%s: Archive is password protected" % self.name)
                     for pw in self.passwordlist:
                         try:
-                            self.archive = py7zlib.Archive7z(self.pseudo_file, password=pw)
+                            self.pseudofile.seek(0)
+                            self.archive = py7zlib.Archive7z(self.pseudofile, password=pw)
                             self.unpacked_files[subfile] = self.archive.getmember(subfile).read()
                             self.password_found = True
                             logging.info("%s: found password: %s" % (self.name, pw))
                             break
+                        except py7zlib.WrongPasswordError as e:
+                            logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
+                        except py7zlib.NoPasswordGivenError:
+                            continue
                         except Exception as e:
-                            if "WrongPasswordError" in str(type(e)):
-                                logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
-                            else:
-                                raise ArchiveError(e)
+                            raise ArchiveError(type(e))
+                except Exception as e:
+                    raise ArchiveError(type(e))
             self.pseudofile.close()
 
 
@@ -559,7 +570,6 @@ class ArchiveRAR(Archive):
                 logging.info("%s: Archive is password protected" % self.name)
                 for pw in self.passwordlist:
                     print pw
-                    pw = 'inf3cted'
                     try:
                         self.archive.setpassword(pw)
                         self.password_found = True

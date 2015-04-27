@@ -23,8 +23,10 @@ import sys
 import os
 import tempfile
 import logging
-from module import ExamineHeaders, ExtractURL, Tokenizer, ArchiveZip, Archive7z, ArchiveRAR, Payload
+from module import Payload, ExamineHeaders, ExtractURL, Tokenizer, ArchiveZip, \
+    Archive7z, ArchiveRAR
 import StringIO
+from io import BytesIO
 import re
 import json
 
@@ -98,20 +100,29 @@ def process_payload(filename, body, content_type, origin_domain, passwordlist):
         # Maybe an archive
         for a in archive_list:
             try:
-                archive = a(StringIO.StringIO(body), passwordlist)
-                unpacked_files = archive.processing()
+                filehandle = BytesIO(body)
             except:
-                # not an archive
-                continue
+                # broken document...
+                filehandle = BytesIO(body.encode('utf-16'))
+            archive = a(filehandle, passwordlist)
+            unpacked_files = archive.processing()
             if unpacked_files is not None and len(unpacked_files) > 0:
                 is_archive = True
                 break
     if not is_archive:
         # Assume it is not an archive
-        unpacked_files[filename] = StringIO.StringIO(body)
+        unpacked_files = {}
+        try:
+            unpacked_files[filename] = BytesIO(body)
+        except:
+            # broken document...
+            unpacked_files[filename] = BytesIO(body.encode('utf-16'))
+
     for fn, filehandle in unpacked_files.iteritems():
+        if filehandle is None:
+            continue
         payload = Payload(fn, filehandle, origin_domain)
-        results[fn] = [content_type] + list(payload.processing())
+        results[fn] = list(payload.processing())
         indicators += payload.indicators
     return results, indicators
 
@@ -138,22 +149,24 @@ if __name__ == '__main__':
     origin_ip, rbl_listed, rbl_comment, mailfrom, mailto, origin_domain = examine_headers.processing()
     indicators += examine_headers.indicators
 
+    attachements = []
     payload_results = []
-    suspicious_urls = []
+    suspicious_urls = set()
 
     if msg.content_type.is_multipart():
         for p in msg.walk():
             extract_urls = ExtractURL(p.body, origin_domain)
-            suspicious_urls += extract_urls.processing()
+            suspicious_urls |= set(extract_urls.processing())
             indicators += extract_urls.indicators
             if p.is_body():
-                content = p.to_string()
+                content = p.body
                 tok = Tokenizer(content)
                 passwordlist += tok.processing()
                 # TODO process that string
             elif p.is_attachment() or p.is_inline():
                 content_type = p.detected_content_type
                 filename = p.detected_file_name
+                attachements.append((filename, content_type))
                 if filename is not None and len(filename) > 0:
                     passwordlist.append(filename)
                     prefix, suffix = os.path.splitext(filename)
@@ -166,7 +179,7 @@ if __name__ == '__main__':
                 pass
     else:  # singlepart
         extract_urls = ExtractURL(msg.body, origin_domain)
-        suspicious_urls += extract_urls.processing()
+        suspicious_urls |= set(extract_urls.processing())
         indicators += extract_urls.indicators
 
     if args.o == 'json':
@@ -181,23 +194,26 @@ if __name__ == '__main__':
     print "\tTo:\t\t%s" % mailto
     if rbl_comment is not None:
         print "\tSuspicious:\t%s" % rbl_comment
+    if len(attachements) > 0:
+        print "\tAttachements:"
+        for fn, content_type in attachements:
+            print "\t\t%s:\t%s" % (fn, str(content_type))
     print "\n"
     i = 0
     for results in payload_results:
         for filename, infos in results.iteritems():
             i += 1
             print "Inspected component #%i:" % i
-            print "\tContent type:\t%s" % str(infos[0])
-            print "\tMime-type:\t%s" % infos[3]
-            print "\tFile name:\t%s - %s" % (filename, infos[2])
-            print "\tSHA1 hash:\t%s" % infos[4]
-            for parser, values in infos[6].iteritems():
+            print "\tMime-type:\t%s" % infos[2]
+            print "\tFile name:\t%s - %s" % (filename, infos[1])
+            print "\tSHA1 hash:\t%s" % infos[3]
+            for parser, values in infos[5].iteritems():
                 if values[0] and values[2]:
                     # one of the parser worked, and the content is suspicious
                     print "\tSuspicious:\t%s" % values[3]
-            if infos[7][0]:
-                print "\tVirus Total:\t%i positive detections (total scans: %i)" % (int(infos[7][1]), int(infos[7][2]))
-                print "\tVT Report\t%s" % str(infos[7][3].strip())
+            if infos[6][0]:
+                print "\tVirus Total:\t%i positive detections (total scans: %i)" % (int(infos[6][1]), int(infos[6][2]))
+                print "\tVT Report\t%s" % str(infos[6][3].strip())
             print "\n"
     if len(suspicious_urls) > 0:
         print "List of extracted suspicious URLs:"
