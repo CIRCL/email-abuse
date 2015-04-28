@@ -142,7 +142,7 @@ if __name__ == '__main__':
 
     subject = msg.subject
     passwordlist = ["password", "passw0rd", "infected", "qwerty", "malicious",
-                    "archive", "zip"]
+                    "archive", "zip", "malware"]
     indicators = 0
 
     examine_headers = ExamineHeaders(msg)
@@ -171,6 +171,7 @@ if __name__ == '__main__':
                     passwordlist.append(filename)
                     prefix, suffix = os.path.splitext(filename)
                     passwordlist.append(prefix)
+                passwordlist = [i for i in passwordlist if len(i) > 1]
                 r, r_indicators = process_payload(filename, p.body, content_type, origin_domain, passwordlist)
                 indicators += r_indicators
                 payload_results.append(r)

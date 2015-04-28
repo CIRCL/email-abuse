@@ -466,7 +466,7 @@ class Archive(Module):
         self.archive = None
         self.password_protected = False
         self.password_found = False
-        self.passwordlist = passwordlist
+        self.passwordlist = set(passwordlist)
         self.unpacked_files = {}
 
     def result(self):
@@ -519,42 +519,67 @@ class ArchiveZip(Archive):
 class Archive7z(Archive):
 
     def __init__(self, pseudofile, passwordlist):
+        # Note: lzma has 2 possibilities for the encryption: listing encrypted or not
+        # if the listing is encrypted, we get a NoPasswordGivenError when calling the class,
+        # If not, we get the NoPasswordGivenError when reading the file.
+        pseudofile = StringIO.StringIO(pseudofile.getvalue())
         super(Archive7z, self).__init__('Archive-7z', pseudofile, passwordlist)
 
     def _processing(self):
-        self.pseudofile.seek(0)
-        self.archive = py7zlib.Archive7z(self.pseudofile)
-        if self.archive is not None and self.archive.getnames() is not None:
-            logging.info("%s: Found a valid 7z archive" % self.name)
-            for subfile in self.archive.getnames():
-                self.unpacked_files[subfile] = None
-                if self.password_protected and not self.password_found:
-                    logging.info("%s: encrypted file '%s' and unable to find the password." % (self.name, subfile))
-                    break
+        try:
+            self.archive = py7zlib.Archive7z(self.pseudofile)
+        except py7zlib.NoPasswordGivenError:
+            # File listing encrypted
+            self.password_protected = True
+            logging.info("%s: Archive is password protected" % self.name)
+            for pw in self.passwordlist:
                 try:
-                    logging.info("%s: Trying to extract %s from archive" % (self.name, subfile))
-                    self.unpacked_files[subfile] = StringIO.StringIO(self.archive.getmember(subfile).read())
-                    logging.info("%s: successfully unpacked file '%s'" % (self.name, subfile))
-                except py7zlib.NoPasswordGivenError as e:
-                    self.password_protected = True
-                    logging.info("%s: Archive is password protected" % self.name)
-                    for pw in self.passwordlist:
-                        try:
-                            self.pseudofile.seek(0)
-                            self.archive = py7zlib.Archive7z(self.pseudofile, password=pw)
-                            self.unpacked_files[subfile] = self.archive.getmember(subfile).read()
-                            self.password_found = True
-                            logging.info("%s: found password: %s" % (self.name, pw))
-                            break
-                        except py7zlib.WrongPasswordError as e:
-                            logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
-                        except py7zlib.NoPasswordGivenError:
-                            continue
-                        except Exception as e:
-                            raise ArchiveError(type(e))
+                    self.pseudofile.seek(0)
+                    self.archive = py7zlib.Archive7z(self.pseudofile, password=pw)
+                    # self.unpacked_files[subfile] = self.archive.getmember(subfile).read()
+                    self.password_found = True
+                    logging.info("%s: found password: %s" % (self.name, pw))
+                    break
+                except py7zlib.WrongPasswordError as e:
+                    logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
+                except py7zlib.NoPasswordGivenError:
+                    continue
                 except Exception as e:
-                    raise ArchiveError(type(e))
-            self.pseudofile.close()
+                    raise ArchiveError(e)
+        if self.password_protected and not self.password_found:
+            # Password not found
+            logging.info("%s: encrypted file and unable to find the password." % (self.name))
+        else:
+            # File listing not password protected or password found, trying to unpack
+            if self.archive is not None and self.archive.getnames() is not None:
+                logging.info("%s: Found a valid 7z archive" % self.name)
+                filenames = self.archive.getnames()
+                for subfile in filenames:
+                    self.unpacked_files[subfile] = None
+                    if self.password_protected and not self.password_found:
+                        continue
+                    try:
+                        logging.info("%s: Trying to extract %s from archive" % (self.name, subfile))
+                        self.unpacked_files[subfile] = StringIO.StringIO(self.archive.getmember(subfile).read())
+                        logging.info("%s: successfully unpacked file '%s'" % (self.name, subfile))
+                    except py7zlib.NoPasswordGivenError:
+                        # Files in the archive encrypted
+                        self.password_protected = True
+                        for pw in self.passwordlist:
+                            try:
+                                self.pseudofile.seek(0)
+                                self.archive = py7zlib.Archive7z(self.pseudofile, password=pw)
+                                self.unpacked_files[subfile] = StringIO.StringIO(self.archive.getmember(subfile).read())
+                                self.password_found = True
+                                logging.info("%s: found password: %s" % (self.name, pw))
+                                break
+                            except py7zlib.WrongPasswordError as e:
+                                logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
+                            except py7zlib.NoPasswordGivenError:
+                                continue
+                            except Exception as e:
+                                raise ArchiveError(e)
+        self.pseudofile.close()
 
 
 class ArchiveRAR(Archive):
