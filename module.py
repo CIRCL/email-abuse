@@ -588,13 +588,21 @@ class ArchiveRAR(Archive):
         super(ArchiveRAR, self).__init__('Archive-rar', pseudofile, passwordlist)
 
     def _processing(self):
-        self.archive = rarfile.RarFile(self.pseudofile)
+        # rarfile.RarFile requires an actual file tu unpack (it uses unrar in a shell)
+        fd, filepath = tempfile.mkstemp()
+        os.write(fd, self.pseudofile.getvalue())
+        os.close(fd)
+        self.pseudofile.close()
+
+        self.archive = rarfile.RarFile(filepath)
         if self.archive is not None:
             if self.archive.needs_password():
                 self.password_protected = True
                 logging.info("%s: Archive is password protected" % self.name)
                 for pw in self.passwordlist:
-                    print pw
+                    if pw in ['is']:
+                        # Bug...
+                        continue
                     try:
                         self.archive.setpassword(pw)
                         self.password_found = True
@@ -604,22 +612,19 @@ class ArchiveRAR(Archive):
                         logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
                         # This is somehow needed.
                         self.archive.close()
-                        self.archive = rarfile.RarFile(self.pseudofile)
+                        self.archive = rarfile.RarFile(filepath)
             if self.password_protected and not self.password_found:
                 # Have to change the messsage: the file list is unknown, so no subfile
                 logging.info("%s: encrypted file and unable to find the password." % (self.name))
                 return
-            print self.archive.infolist()
             for f in self.archive.infolist():
                 subfile = f.filename
-                print subfile
                 self.unpacked_files[subfile] = None
                 try:
                     logging.info("%s: Trying to extract %s from archive" % (self.name, subfile))
-                    # FIXME: cannot work: https://github.com/markokr/rarfile/blob/9c7ce20a00384cf237e66c2f46effdd94f8d4ca6/rarfile.py#L1189
-                    self.unpacked_files[subfile] = self.archive.read(f)
+                    self.unpacked_files[subfile] = StringIO.StringIO(self.archive.open(f).read())
                     logging.info("%s: successfully unpacked file '%s'" % (self.name, subfile))
                 except Exception as e:
                     raise ArchiveError(e)
             self.archive.close()
-            self.pseudofile.close()
+            os.remove(filepath)
