@@ -509,6 +509,10 @@ class ArchiveZip(Archive):
                             if "Bad password" in str(e):
                                 logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
                             elif "encrypted" in str(e):
+                                # Empty password...
+                                continue
+                            elif "invalid distance too far back" in str(e):
+                                # Password seen as correct but is not...
                                 continue
                             else:
                                 raise ArchiveError(e)
@@ -600,19 +604,25 @@ class ArchiveRAR(Archive):
                 self.password_protected = True
                 logging.info("%s: Archive is password protected" % self.name)
                 for pw in self.passwordlist:
-                    if pw in ['is']:
-                        # Bug...
-                        continue
                     try:
                         self.archive.setpassword(pw)
+                        if len(self.archive.namelist()) == 0:
+                            # Wrong password...
+                            raise rarfile.BadRarFile('Still wrong password...')
                         self.password_found = True
                         logging.info("%s: found password: %s" % (self.name, pw))
                         break
+                    except rarfile.BadRarFile as e:
+                        if "wrong password" in str(e):
+                            logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
+                            # This is somehow needed.
+                            self.archive.close()
+                            self.archive = rarfile.RarFile(filepath)
+                        else:
+                            raise ArchiveError(e)
                     except Exception as e:
-                        logging.info("%s: error: %s while trying password '%s'" % (self.name, e, pw))
-                        # This is somehow needed.
-                        self.archive.close()
-                        self.archive = rarfile.RarFile(filepath)
+                        raise ArchiveError(e)
+
             if self.password_protected and not self.password_found:
                 # Have to change the messsage: the file list is unknown, so no subfile
                 logging.info("%s: encrypted file and unable to find the password." % (self.name))
