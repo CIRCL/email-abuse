@@ -25,7 +25,6 @@ import tempfile
 import logging
 from module import Payload, ExamineHeaders, ExtractURL, Tokenizer, ArchiveZip, \
     Archive7z, ArchiveRAR
-import StringIO
 from io import BytesIO
 import re
 import json
@@ -184,40 +183,40 @@ if __name__ == '__main__':
         indicators += extract_urls.indicators
 
     if args.o == 'json':
-        print (json.dumps((payload_results, suspicious_urls, indicators), indent=4))
+        print((json.dumps((payload_results, suspicious_urls, indicators), indent=4)))
         sys.exit()
 
-    print("Email abuse - inspecting email object: %s\n" % msg_file)
-    print "\tContent type:\tEmail info"
-    print "\tIP Address:\t%s" % origin_ip
-    print "\tSubject:\t%s" % subject
-    print "\tFrom:\t\t%s" % mailfrom
-    print "\tTo:\t\t%s" % mailto
+    print(("Email abuse - inspecting email object: %s\n" % msg_file))
+    print("\tContent type:\tEmail info")
+    print("\tIP Address:\t%s" % origin_ip)
+    print("\tSubject:\t%s" % subject)
+    print("\tFrom:\t\t%s" % mailfrom)
+    print("\tTo:\t\t%s" % mailto)
     if rbl_comment is not None:
-        print "\tSuspicious:\t%s" % rbl_comment
+        print("\tSuspicious:\t%s" % rbl_comment)
     if len(attachements) > 0:
-        print "\tAttachements:"
+        print("\tAttachements:")
         for fn, content_type in attachements:
-            print "\t\t%s:\t%s" % (fn, str(content_type))
-    print "\n"
+            print("\t\t%s:\t%s" % (fn, str(content_type)))
+    print("\n")
     i = 0
     for results in payload_results:
         for filename, infos in results.iteritems():
             i += 1
-            print "Inspected component #%i:" % i
-            print "\tMime-type:\t%s" % infos[2]
-            print "\tFile name:\t%s - %s" % (filename, infos[1])
-            print "\tSHA1 hash:\t%s" % infos[3]
+            print("Inspected component #%i:" % i)
+            print("\tMime-type:\t%s" % infos[2])
+            print("\tFile name:\t%s - %s" % (filename, infos[1]))
+            print("\tSHA1 hash:\t%s" % infos[3])
             for parser, values in infos[5].iteritems():
                 if values[0] and values[2]:
                     # one of the parser worked, and the content is suspicious
-                    print "\tSuspicious:\t%s" % values[3]
+                    print("\tSuspicious:\t%s" % values[3])
             if infos[6][0]:
-                print "\tVirus Total:\t%i positive detections (total scans: %i)" % (int(infos[6][1]), int(infos[6][2]))
-                print "\tVT Report\t%s" % str(infos[6][3].strip())
-            print "\n"
+                print("\tVirus Total:\t%i positive detections (total scans: %i)" % (int(infos[6][1]), int(infos[6][2])))
+                print("\tVT Report\t%s" % str(infos[6][3].strip()))
+            print("\n")
     if len(suspicious_urls) > 0:
-        print "List of extracted suspicious URLs:"
+        print("List of extracted suspicious URLs:")
         for url in suspicious_urls:
-            print "\t%s" % url
-    print "\nLevel of suspiciousness:\t%i" % indicators
+            print("\t%s" % url)
+    print("\nLevel of suspiciousness:\t%i" % indicators)
