@@ -4,6 +4,6 @@ http://www.decalage.info/files/pdfid_PL-0.0.11b.zip
 nltk
 git+https://github.com/fancycode/pylzma.git
 flanker
-magic
+python-magic
 requests
 pycrypto
