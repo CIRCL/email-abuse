@@ -19,6 +19,7 @@
 
 import argparse
 from flanker import mime
+from flanker.mime.message.errors import DecodingError
 import sys
 import os
 import tempfile
@@ -26,8 +27,11 @@ import logging
 from module import Payload, ExamineHeaders, ExtractURL, Tokenizer, ArchiveZip, \
     Archive7z, ArchiveRAR
 from io import BytesIO
+import StringIO
 import re
 import json
+from oletools import oleid
+
 
 storepath = 'store'
 
@@ -117,13 +121,51 @@ def process_payload(filename, body, content_type, origin_domain, passwordlist):
             # broken document...
             unpacked_files[filename] = BytesIO(body.encode('utf-16'))
 
-    for fn, filehandle in unpacked_files.iteritems():
+    for fn, filehandle in list(unpacked_files.items()):
         if filehandle is None:
             continue
         payload = Payload(fn, filehandle, origin_domain)
         results[fn] = list(payload.processing())
         indicators += payload.indicators
     return results, indicators
+
+
+def process_attachement(attachment, origin_domain):
+    global indicators
+    global passwordlist
+    global suspicious_urls
+    try:
+        mpart_attachment = mime.from_string(attachment.body)
+        if mpart_attachment.content_type.is_multipart():
+            for p in mpart_attachment.walk():
+                process_attachement(p, origin_domain)
+    except DecodingError:
+        # Binary attachement
+        pass
+    oid = oleid.OleID(StringIO.StringIO(attachment.body))
+    try:
+        oindicators = oid.check()
+        for i in oindicators:
+            if i.value:
+                print 'Indicator id=%s name="%s" type=%s value=%s' % (i.id, i.name, i.type, repr(i.value))
+                print 'description:', i.description
+    except IOError:
+        # Invalid OLE file
+        pass
+    extract_urls = ExtractURL(attachment.body, origin_domain)
+    suspicious_urls |= set(extract_urls.processing())
+    indicators += extract_urls.indicators
+    content_type = attachment.detected_content_type
+    filename = attachment.detected_file_name
+    attachements.append((filename, content_type))
+    if filename is not None and len(filename) > 0:
+        passwordlist.append(filename)
+        prefix, suffix = os.path.splitext(filename)
+        passwordlist.append(prefix)
+    passwordlist = [i for i in passwordlist if len(i) > 1]
+    r, r_indicators = process_payload(filename, attachment.body, content_type, origin_domain, passwordlist)
+    indicators += r_indicators
+    payload_results.append(r)
 
 
 if __name__ == '__main__':
@@ -154,26 +196,16 @@ if __name__ == '__main__':
 
     if msg.content_type.is_multipart():
         for p in msg.walk():
-            extract_urls = ExtractURL(p.body, origin_domain)
-            suspicious_urls |= set(extract_urls.processing())
-            indicators += extract_urls.indicators
             if p.is_body():
+                extract_urls = ExtractURL(p.body, origin_domain)
+                suspicious_urls |= set(extract_urls.processing())
+                indicators += extract_urls.indicators
                 content = p.body
                 tok = Tokenizer(content)
                 passwordlist += tok.processing()
                 # TODO process that string
             elif p.is_attachment() or p.is_inline():
-                content_type = p.detected_content_type
-                filename = p.detected_file_name
-                attachements.append((filename, content_type))
-                if filename is not None and len(filename) > 0:
-                    passwordlist.append(filename)
-                    prefix, suffix = os.path.splitext(filename)
-                    passwordlist.append(prefix)
-                passwordlist = [i for i in passwordlist if len(i) > 1]
-                r, r_indicators = process_payload(filename, p.body, content_type, origin_domain, passwordlist)
-                indicators += r_indicators
-                payload_results.append(r)
+                process_attachement(p, origin_domain)
             else:
                 # What do we do there? Is it possible?
                 pass
@@ -201,13 +233,13 @@ if __name__ == '__main__':
     print("\n")
     i = 0
     for results in payload_results:
-        for filename, infos in results.iteritems():
+        for filename, infos in list(results.items()):
             i += 1
             print("Inspected component #%i:" % i)
             print("\tMime-type:\t%s" % infos[2])
             print("\tFile name:\t%s - %s" % (filename, infos[1]))
             print("\tSHA1 hash:\t%s" % infos[3])
-            for parser, values in infos[5].iteritems():
+            for parser, values in list(infos[5].items()):
                 if values[0] and values[2]:
                     # one of the parser worked, and the content is suspicious
                     print("\tSuspicious:\t%s" % values[3])
