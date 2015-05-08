@@ -7,3 +7,4 @@ flanker
 python-magic
 requests
 pycrypto
+oletools
