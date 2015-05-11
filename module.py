@@ -10,6 +10,7 @@ import email
 import StringIO
 import zipfile
 import olefile
+from oletools import oleid
 import tempfile
 import pdfid_PL
 import xml.etree.ElementTree as ET
@@ -269,9 +270,10 @@ class ParseOLE(Module):
         self.has_parsed = False
         self.is_suspicious = False
         self.reason = None
+        self.oleid_details = []
 
     def result(self):
-        return self.is_ole, self.has_parsed, self.is_suspicious, self.reason
+        return self.is_ole, self.has_parsed, self.is_suspicious, self.reason, self.oleid_details
 
     def _processing(self):
         if self.content is None or len(self.content) == 0:
@@ -284,7 +286,6 @@ class ParseOLE(Module):
             logging.info("%s: got error while opening file: %s" % (self.name, e))
             self.reason = 'Unable to open the OLE document'
             return
-        # ole = olefile.OleFileIO(x, raise_defects=olefile.DEFECT_INCORRECT)
         if ole.parsing_issues:
             self.is_suspicious = True
             parsing_issues = []
@@ -307,6 +308,16 @@ class ParseOLE(Module):
                 logging.info("%s: detected a Macro" % self.name)
             else:
                 logging.info("%s: file appears clean" % self.name)
+        try:
+            oid = oleid.OleID(StringIO.StringIO(self.content))
+            oindicators = oid.check()
+            for i in oindicators:
+                print i.value
+                if i.value and i.description:
+                    self.oleid_details.append((i.name, i.description))
+        except Exception as e:
+            # Invalid OLE file
+            logging.info("%s: OleID Failed: %s" % (self.name, e))
 
 
 class ParsePDF(Module):

@@ -27,10 +27,8 @@ import logging
 from module import Payload, ExamineHeaders, ExtractURL, Tokenizer, ArchiveZip, \
     Archive7z, ArchiveRAR
 from io import BytesIO
-import StringIO
 import re
 import json
-from oletools import oleid
 
 
 storepath = 'store'
@@ -142,16 +140,6 @@ def process_attachement(attachment, origin_domain):
     except DecodingError:
         # Binary attachement
         pass
-    oid = oleid.OleID(StringIO.StringIO(attachment.body))
-    try:
-        oindicators = oid.check()
-        for i in oindicators:
-            if i.value:
-                print 'Indicator id=%s name="%s" type=%s value=%s' % (i.id, i.name, i.type, repr(i.value))
-                print 'description:', i.description
-    except IOError:
-        # Invalid OLE file
-        pass
     extract_urls = ExtractURL(attachment.body, origin_domain)
     suspicious_urls |= set(extract_urls.processing())
     indicators += extract_urls.indicators
@@ -240,6 +228,9 @@ if __name__ == '__main__':
             print("\tFile name:\t%s - %s" % (filename, infos[1]))
             print("\tSHA1 hash:\t%s" % infos[3])
             for parser, values in list(infos[5].items()):
+                if len(values) == 5 and values[4] is not None:
+                    for name, detail in values[4]:
+                        print("\t%s:\t%s" % (name, detail))
                 if values[0] and values[2]:
                     # one of the parser worked, and the content is suspicious
                     print("\tSuspicious:\t%s" % values[3])
