@@ -83,6 +83,8 @@ if __name__ == '__main__':
                     print("\t%s is an archive, contains: %s" % (payload['filename'], key))
                 print("\tSHA1 hash:\t%s" % value[3])
                 for parser, values in list(value[5].items()):
+                    if values is None:
+                        continue
                     if len(values) == 5 and values[4] is not None:
                         for name, detail in values[4]:
                             print("\t%s:\t%s" % (name, detail))

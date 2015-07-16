@@ -125,7 +125,7 @@ def process_attachement(attachment, detected_content_type, detected_file_name, o
                 filename = detected_file_name
                 ind, s_urls, payload_r = process_attachement(p.body, detected_content_type, filename, origin_domain, passwordlist, sha)
                 indicators += ind
-                suspicious_urls |= s_urls
+                suspicious_urls |= set(s_urls)
                 payload_results += payload_r
     except DecodingError:
         # Binary attachement
@@ -175,7 +175,7 @@ def process_content(sha, origin_domain, store):
                         passwordlist += pwlist
                     else:
                         detected_content_type = str(p.detected_content_type)
-                        detected_file_name = str(p.detected_file_name)
+                        detected_file_name = p.detected_file_name
                         j = process_attachement.delay(p.body, detected_content_type, detected_file_name, origin_domain, passwordlist, sha)
                         jids.append(j.get_id())
             else:
