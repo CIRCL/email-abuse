@@ -17,80 +17,60 @@
 # Compressed files      find suspicious files
 
 
-import argparse
 from flanker import mime
 from flanker.mime.message.errors import DecodingError
-import sys
 import os
-import tempfile
-import logging
 from module import Payload, ExamineHeaders, ExtractURL, Tokenizer, ArchiveZip, \
     Archive7z, ArchiveRAR
 from io import BytesIO
-import re
-import json
+import hashlib
+from settings import REDIS_HOST, REDIS_PORT, REDIS_DB
+import redis
 
 
-storepath = 'store'
+redis_conn = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 
 
-def create_unique_file():
-    if not os.path.exists(storepath):
-        os.makedirs(storepath)
-    fd, fn = tempfile.mkstemp(dir=storepath)
-    return fn
+# Rq stuff
+from rq.decorators import job
 
 
-def get_filename(path):
-    p, fn = os.path.split(path)
-    return fn
+def hash_mail(mail):
+    sha = hashlib.sha1()
+    sha.update(mail)
+    return sha.hexdigest()
 
 
-def logging_init(msg_file):
-    logging.getLogger("requests").setLevel(logging.WARNING)
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
-
-    msg_log_file = msg_file + ".log"
-    logfile = os.path.join(storepath, msg_log_file)
-    fh_formatter = logging.Formatter('%(asctime)s - %(message)s')
-    fh = logging.FileHandler(logfile)
-    fh.setFormatter(fh_formatter)
-    fh.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
-    return logger
-
-
-def store_msg(content, filename):
-    if not os.path.exists(storepath):
-        os.makedirs(storepath)
-    path = os.path.join(storepath, filename)
-    f = open(path, 'wb')
-    content = str(content)
-    f.write(content)
-    f.close()
+def store_mail(store, mail):
+    try:
+        if not os.path.exists(store):
+            os.makedirs(store)
+        sha = hash_mail(mail)
+        filename = os.path.join(store, sha)
+        if not os.path.exists(filename):
+            with open(filename, 'wb') as f:
+                f.write(mail)
+        return True, sha, None
+    except Exception as e:
+        return False, None, str(e)
 
 
-def init(msg):
-    msg_file = get_filename(create_unique_file())
-    logger = logging_init(msg_file)
-    logger.info('Email abuse - inspecting new mail: %s' % msg_file)
-    store_msg(msg, msg_file)
-    return msg_file
+def process_headers(sha, store):
+    mailpath = os.path.join(store, sha)
+    if os.path.exists(mailpath):
+        with open(mailpath, 'rb') as f:
+            mail = mime.from_string(f.read())
+            examine_headers = ExamineHeaders(mail, sha)
+            origin_ip, rbl_listed, rbl_comment, mailfrom, mailto, origin_domain = examine_headers.processing()
+            return (mail.subject, origin_ip, rbl_listed, rbl_comment, mailfrom,
+                    mailto, origin_domain, examine_headers.indicators)
 
 
 archive_list = [ArchiveZip, Archive7z, ArchiveRAR]
 
 
-def get_strings(payload):
-    chars = r"A-Za-z0-9/\-:.,_$%'()[\]<> "
-    shortest_run = 4
-    regexp = '[%s]{%d,}' % (chars, shortest_run)
-    pattern = re.compile(regexp)
-    return pattern.findall(payload)
-
-
-def process_payload(filename, body, content_type, origin_domain, passwordlist):
+def process_payload(filename, body, content_type, origin_domain, passwordlist, sha):
+    print passwordlist
     is_archive = False
     unpacked_files = {}
     results = {}
@@ -105,7 +85,7 @@ def process_payload(filename, body, content_type, origin_domain, passwordlist):
             except:
                 # broken document...
                 filehandle = BytesIO(body.encode('utf-16'))
-            archive = a(filehandle, passwordlist)
+            archive = a(filehandle, passwordlist, sha)
             unpacked_files = archive.processing()
             if unpacked_files is not None and len(unpacked_files) > 0:
                 is_archive = True
@@ -122,124 +102,82 @@ def process_payload(filename, body, content_type, origin_domain, passwordlist):
     for fn, filehandle in list(unpacked_files.items()):
         if filehandle is None:
             continue
-        payload = Payload(fn, filehandle, origin_domain)
-        results[fn] = list(payload.processing())
+        payload = Payload(fn, filehandle, origin_domain, sha)
+        result = payload.processing()
+        if result is not None:
+            results[fn] = list(result)
+        else:
+            results[fn] = []
         indicators += payload.indicators
-    return results, indicators
+    return indicators, results
 
 
-def process_attachement(attachment, origin_domain):
-    global indicators
-    global passwordlist
-    global suspicious_urls
+@job('high', connection=redis_conn, timeout=60)
+def process_attachement(attachment, detected_content_type, detected_file_name, origin_domain, passwordlist, sha):
+    indicators = 0
+    payload_results = []
+    suspicious_urls = set()
     try:
-        mpart_attachment = mime.from_string(attachment.body)
+        mpart_attachment = mime.from_string(attachment)
         if mpart_attachment.content_type.is_multipart():
             for p in mpart_attachment.walk():
-                process_attachement(p, origin_domain)
+                detected_content_type = str(p.detected_content_type)
+                filename = detected_file_name
+                ind, s_urls, payload_r = process_attachement(p.body, detected_content_type, filename, origin_domain, passwordlist, sha)
+                indicators += ind
+                suspicious_urls |= s_urls
+                payload_results += payload_r
     except DecodingError:
         # Binary attachement
         pass
-    extract_urls = ExtractURL(attachment.body, origin_domain)
+    extract_urls = ExtractURL(attachment, origin_domain, sha)
     suspicious_urls |= set(extract_urls.processing())
     indicators += extract_urls.indicators
-    content_type = attachment.detected_content_type
-    filename = attachment.detected_file_name
-    attachements.append((filename, content_type))
+    content_type = detected_content_type
+    filename = detected_file_name
     if filename is not None and len(filename) > 0:
         passwordlist.append(filename)
         prefix, suffix = os.path.splitext(filename)
         passwordlist.append(prefix)
     passwordlist = [i for i in passwordlist if len(i) > 1]
-    r, r_indicators = process_payload(filename, attachment.body, content_type, origin_domain, passwordlist)
+    r_indicators, r = process_payload(filename, attachment, content_type, origin_domain, passwordlist, sha)
+    r['filename'] = filename
+    r['content_type'] = content_type
     indicators += r_indicators
     payload_results.append(r)
+    return indicators, list(suspicious_urls), payload_results
 
 
-if __name__ == '__main__':
-    argParser = argparse.ArgumentParser(description='email_abuse parser')
-    argParser.add_argument('-r', default='-', help='Filename of the raw email to read (default: stdin)')
-    argParser.add_argument('-o', default='ascii', help='Output format: ascii or json (default: ascii)')
-    args = argParser.parse_args()
-    if args.r == '-':
-        msg = mime.from_string(sys.stdin.read())
-    else:
-        fp = open(args.r, 'rb')
-        msg = mime.from_string(fp.read())
+def process_text(body, origin_domain, sha):
+    extract_urls = ExtractURL(body, origin_domain, sha)
+    suspicious_urls = set(extract_urls.processing())
+    indicators = extract_urls.indicators
+    tok = Tokenizer(body, sha)
+    passwordlist = tok.processing()
+    return indicators, list(suspicious_urls), passwordlist
 
-    msg_file = init(msg)
 
-    subject = msg.subject
-    passwordlist = ["password", "passw0rd", "infected", "qwerty", "malicious",
-                    "archive", "zip", "malware"]
+def process_content(sha, origin_domain, store):
+    mailpath = os.path.join(store, sha)
+    jids = []
     indicators = 0
-
-    examine_headers = ExamineHeaders(msg)
-    origin_ip, rbl_listed, rbl_comment, mailfrom, mailto, origin_domain = examine_headers.processing()
-    indicators += examine_headers.indicators
-
-    attachements = []
-    payload_results = []
-    suspicious_urls = set()
-
-    if msg.content_type.is_multipart():
-        for p in msg.walk():
-            if p.is_body():
-                extract_urls = ExtractURL(p.body, origin_domain)
-                suspicious_urls |= set(extract_urls.processing())
-                indicators += extract_urls.indicators
-                content = p.body
-                tok = Tokenizer(content)
-                passwordlist += tok.processing()
-                # TODO process that string
-            elif p.is_attachment() or p.is_inline():
-                process_attachement(p, origin_domain)
+    suspicious_urls = []
+    passwordlist = []
+    if os.path.exists(mailpath):
+        with open(mailpath, 'rb') as f:
+            msg = mime.from_string(f.read())
+            if msg.content_type.is_multipart():
+                for p in msg.walk():
+                    if p.is_body():
+                        ind, urls, pwlist = process_text(p.body, origin_domain, sha)
+                        indicators += ind
+                        suspicious_urls += urls
+                        passwordlist += pwlist
+                    else:
+                        detected_content_type = str(p.detected_content_type)
+                        detected_file_name = str(p.detected_file_name)
+                        j = process_attachement.delay(p.body, detected_content_type, detected_file_name, origin_domain, passwordlist, sha)
+                        jids.append(j.get_id())
             else:
-                # What do we do there? Is it possible?
-                pass
-    else:  # singlepart
-        extract_urls = ExtractURL(msg.body, origin_domain)
-        suspicious_urls |= set(extract_urls.processing())
-        indicators += extract_urls.indicators
-
-    if args.o == 'json':
-        print((json.dumps((payload_results, suspicious_urls, indicators), indent=4)))
-        sys.exit()
-
-    print(("Email abuse - inspecting email object: %s\n" % msg_file))
-    print("\tContent type:\tEmail info")
-    print("\tIP Address:\t%s" % origin_ip)
-    print("\tSubject:\t%s" % subject)
-    print("\tFrom:\t\t%s" % mailfrom)
-    print("\tTo:\t\t%s" % mailto)
-    if rbl_comment is not None:
-        print("\tSuspicious:\t%s" % rbl_comment)
-    if len(attachements) > 0:
-        print("\tAttachements:")
-        for fn, content_type in attachements:
-            print("\t\t%s:\t%s" % (fn, str(content_type)))
-    print("\n")
-    i = 0
-    for results in payload_results:
-        for filename, infos in list(results.items()):
-            i += 1
-            print("Inspected component #%i:" % i)
-            print("\tMime-type:\t%s" % infos[2])
-            print("\tFile name:\t%s - %s" % (filename, infos[1]))
-            print("\tSHA1 hash:\t%s" % infos[3])
-            for parser, values in list(infos[5].items()):
-                if len(values) == 5 and values[4] is not None:
-                    for name, detail in values[4]:
-                        print("\t%s:\t%s" % (name, detail))
-                if values[0] and values[2]:
-                    # one of the parser worked, and the content is suspicious
-                    print("\tSuspicious:\t%s" % values[3])
-            if infos[6][0]:
-                print("\tVirus Total:\t%i positive detections (total scans: %i)" % (int(infos[6][1]), int(infos[6][2])))
-                print("\tVT Report\t%s" % str(infos[6][3].strip()))
-            print("\n")
-    if len(suspicious_urls) > 0:
-        print("List of extracted suspicious URLs:")
-        for url in suspicious_urls:
-            print("\t%s" % url)
-    print("\nLevel of suspiciousness:\t%i" % indicators)
+                indicators, suspicious_urls, passwordlist = process_text(msg.body, origin_domain, sha)
+    return indicators, suspicious_urls, jids

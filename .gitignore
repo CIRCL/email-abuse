@@ -1,6 +1,7 @@
 *.pyc
 *.swp
 *.key
+*.rdb
 corpus
 test
 store

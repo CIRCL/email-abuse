@@ -8,3 +8,7 @@ python-magic
 requests
 pycrypto
 oletools
+olefile
+
+# Async
+rq

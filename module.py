@@ -61,10 +61,18 @@ class ExamineHeaderError(EmailAbuseError):
 
 class Module(object):
 
-    def __init__(self, name):
+    def __init__(self, name, logname, logpath='store'):
         self.name = name
+        self.logname = logname
         self.indicators = 0
+        self.loginit(logname, logpath)
         logging.info("{}: initializing".format(self.name))
+
+    def loginit(self, logname, logpath):
+        logfile = os.path.join(logpath, logname + '.log')
+        logformat = '%(asctime)s - %(message)s'
+        logging.basicConfig(format=logformat, filename=logfile, level=logging.DEBUG)
+        logging.getLogger(logname)
 
     def _processing(self):
         raise ImplementationRequired('You have to implement the processing method in the module {}'.format(self.name))
@@ -91,8 +99,8 @@ class Module(object):
 
 class VirusTotal(Module):
 
-    def __init__(self, payload_hash):
-        super(VirusTotal, self).__init__('VirusTotal')
+    def __init__(self, payload_hash, logname):
+        super(VirusTotal, self).__init__('VirusTotal', logname)
         self.vturl = "https://www.virustotal.com/vtapi/v2/file/report"
         self.vtkey = open('virustotal.key', 'r').readline().strip()
         self.vtparameter = {"resource": None, "apikey": self.vtkey}
@@ -129,8 +137,8 @@ class VirusTotal(Module):
 
 class Tokenizer(Module):
 
-    def __init__(self, content):
-        super(Tokenizer, self).__init__('Tokenizer')
+    def __init__(self, content, logname):
+        super(Tokenizer, self).__init__('Tokenizer', logname)
         self.content = content
         self.passwordlist = []
 
@@ -156,8 +164,8 @@ class Tokenizer(Module):
 
 class ExtractURL(Module):
 
-    def __init__(self, content, origin_domain):
-        super(ExtractURL, self).__init__('Extract-URLs')
+    def __init__(self, content, origin_domain, logname):
+        super(ExtractURL, self).__init__('Extract-URLs', logname)
         self.content = content
         self.file_excludes = (".png", ".jpg", ".svg", ".gif")
         self.domain_excludes = ["w3.org", "akamai.net", "norton.com", "facebook.com",
@@ -189,8 +197,8 @@ class ExtractURL(Module):
 
 class ExamineHeaders(Module):
 
-    def __init__(self, message):
-        super(ExamineHeaders, self).__init__('Header-examination')
+    def __init__(self, message, logname):
+        super(ExamineHeaders, self).__init__('Header-examination', logname)
         self.message = message
         self.origin_ip = None
         self.origin_domain = None
@@ -260,11 +268,11 @@ class ExamineHeaders(Module):
 
 class ParseOLE(Module):
 
-    def __init__(self, content):
+    def __init__(self, content, logname):
         """
             content has to be a stream in memory
         """
-        super(ParseOLE, self).__init__('Parse-OLE')
+        super(ParseOLE, self).__init__('Parse-OLE', logname)
         self.content = content
         self.is_ole = False
         self.has_parsed = False
@@ -322,8 +330,8 @@ class ParseOLE(Module):
 
 class ParsePDF(Module):
 
-    def __init__(self, content):
-        super(ParsePDF, self).__init__('Parse-PDF')
+    def __init__(self, content, logname):
+        super(ParsePDF, self).__init__('Parse-PDF', logname)
         self.content = content
         self.is_pdf = False
         self.has_parsed = False
@@ -358,8 +366,8 @@ class ParsePDF(Module):
 
 class ParseOOXML(Module):
 
-    def __init__(self, content):
-        super(ParseOOXML, self).__init__('Parse-OOXML')
+    def __init__(self, content, logname):
+        super(ParseOOXML, self).__init__('Parse-OOXML', logname)
         self.content = content
         self.is_xml = False
         self.has_parsed = False
@@ -413,8 +421,8 @@ class ParseOOXML(Module):
 
 class Payload(Module):
 
-    def __init__(self, filename, payload, origin_domain):
-        super(Payload, self).__init__('Payload')
+    def __init__(self, filename, payload, origin_domain, logname):
+        super(Payload, self).__init__('Payload', logname)
         self.filename = filename
         self.suspicious_extensions = (".exe", ".com", ".scr", ".cpl", ".docm",
                                       ".jar", ".pif", ".msi", ".hta", ".msc",
@@ -457,22 +465,22 @@ class Payload(Module):
         h.update(self.payload.getvalue())
         self.sha1 = h.hexdigest()
         self.mimetype = magic.from_buffer(self.payload.getvalue())
-        extract_urls = ExtractURL(self.payload.getvalue(), self.origin_domain)
+        extract_urls = ExtractURL(self.payload.getvalue(), self.origin_domain, self.logname)
         self.suspicious_urls = extract_urls.processing()
         self.indicators += extract_urls.indicators
-        vt = VirusTotal(self.sha1)
+        vt = VirusTotal(self.sha1, self.logname)
         self.vt_result = vt.processing()
         self.indicators += vt.indicators
         for parser in self.parser_list:
-            p = parser(self.payload.getvalue())
+            p = parser(self.payload.getvalue(), self.logname)
             self.parser_results[type(p).__name__] = p.processing()
             self.indicators += p.indicators
 
 
 class Archive(Module):
 
-    def __init__(self, name, pseudofile, passwordlist):
-        super(Archive, self).__init__(name)
+    def __init__(self, name, pseudofile, passwordlist, logname):
+        super(Archive, self).__init__(name, logname)
         self.pseudofile = pseudofile
         self.archive = None
         self.password_protected = False
@@ -486,9 +494,9 @@ class Archive(Module):
 
 class ArchiveZip(Archive):
 
-    def __init__(self, pseudofile, passwordlist):
+    def __init__(self, pseudofile, passwordlist, logname):
         pseudofile = StringIO.StringIO(pseudofile.getvalue())
-        super(ArchiveZip, self).__init__('Archive-zip', pseudofile, passwordlist)
+        super(ArchiveZip, self).__init__('Archive-zip', pseudofile, passwordlist, logname)
 
     def _processing(self):
         self.archive = zipfile.ZipFile(self.pseudofile)
@@ -533,12 +541,12 @@ class ArchiveZip(Archive):
 
 class Archive7z(Archive):
 
-    def __init__(self, pseudofile, passwordlist):
+    def __init__(self, pseudofile, passwordlist, logname):
         # Note: lzma has 2 possibilities for the encryption: listing encrypted or not
         # if the listing is encrypted, we get a NoPasswordGivenError when calling the class,
         # If not, we get the NoPasswordGivenError when reading the file.
         pseudofile = StringIO.StringIO(pseudofile.getvalue())
-        super(Archive7z, self).__init__('Archive-7z', pseudofile, passwordlist)
+        super(Archive7z, self).__init__('Archive-7z', pseudofile, passwordlist, logname)
 
     def _processing(self):
         try:
@@ -599,8 +607,8 @@ class Archive7z(Archive):
 
 class ArchiveRAR(Archive):
 
-    def __init__(self, pseudofile, passwordlist):
-        super(ArchiveRAR, self).__init__('Archive-rar', pseudofile, passwordlist)
+    def __init__(self, pseudofile, passwordlist, logname):
+        super(ArchiveRAR, self).__init__('Archive-rar', pseudofile, passwordlist, logname)
 
     def _processing(self):
         # rarfile.RarFile requires an actual file tu unpack (it uses unrar in a shell)
