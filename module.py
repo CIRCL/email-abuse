@@ -485,7 +485,8 @@ class Archive(Module):
         self.archive = None
         self.password_protected = False
         self.password_found = False
-        self.passwordlist = set(passwordlist)
+        self.common_pass = ["password", "passw0rd", "infected", "qwerty", "malicious", "archive", "zip", "malware"]
+        self.passwordlist = self.common_pass + list(set(passwordlist))
         self.unpacked_files = {}
 
     def result(self):

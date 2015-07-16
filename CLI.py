@@ -31,8 +31,6 @@ if __name__ == '__main__':
     result, sha, errormsg = store_mail(args.store_path, msg.to_string())
 
     subject = msg.subject
-    passwordlist = ["password", "passw0rd", "infected", "qwerty", "malicious",
-                    "archive", "zip", "malware"]
     indicators = 0
 
     subject, origin_ip, rbl_listed, rbl_comment, mailfrom, mailto, origin_domain, ind = process_headers(sha, args.store_path)
