@@ -72,34 +72,31 @@ archive_list = [ArchiveZip, Archive7z, ArchiveRAR]
 def process_payload(filename, body, content_type, origin_domain, passwordlist, sha):
     print passwordlist
     is_archive = False
-    unpacked_files = {}
     results = {}
     indicators = 0
-    if (content_type is not None
-            and "Microsoft Word 2007+" not in content_type
-            and "Microsoft Excel 2007+" not in content_type):
-        # Maybe an archive
-        for a in archive_list:
-            try:
-                filehandle = BytesIO(body)
-            except:
-                # broken document...
-                filehandle = BytesIO(body.encode('utf-16'))
-            archive = a(filehandle, passwordlist, sha)
-            unpacked_files = archive.processing()
-            if unpacked_files is not None and len(unpacked_files) > 0:
-                is_archive = True
-                break
+
+    # Initial file
+    payloads = {}
+    try:
+        payloads[filename] = BytesIO(body)
+    except:
+        # broken document...
+        payloads[filename] = BytesIO(body.encode('utf-16'))
+
+    # TODO: check original attachement on VT
+    # Maybe an archive
+    for a in archive_list:
+        archive = a(payloads[filename], passwordlist, sha)
+        unpacked_files = archive.processing()
+        if unpacked_files is not None and len(unpacked_files) > 0:
+            is_archive = True
+            payloads.update(unpacked_files)
+            break
     if not is_archive:
         # Assume it is not an archive
-        unpacked_files = {}
-        try:
-            unpacked_files[filename] = BytesIO(body)
-        except:
-            # broken document...
-            unpacked_files[filename] = BytesIO(body.encode('utf-16'))
+        pass
 
-    for fn, filehandle in list(unpacked_files.items()):
+    for fn, filehandle in list(payloads.items()):
         if filehandle is None:
             continue
         payload = Payload(fn, filehandle, origin_domain, sha)
@@ -109,10 +106,10 @@ def process_payload(filename, body, content_type, origin_domain, passwordlist, s
         else:
             results[fn] = []
         indicators += payload.indicators
-    return indicators, results
+    return indicators, is_archive, results
 
 
-@job('high', connection=redis_conn, timeout=60)
+@job('high', connection=redis_conn, timeout=120)
 def process_attachement(attachment, detected_content_type, detected_file_name, origin_domain, passwordlist, sha):
     indicators = 0
     payload_results = []
@@ -140,12 +137,12 @@ def process_attachement(attachment, detected_content_type, detected_file_name, o
         prefix, suffix = os.path.splitext(filename)
         passwordlist.append(prefix)
     passwordlist = [i for i in passwordlist if len(i) > 1]
-    r_indicators, r = process_payload(filename, attachment, content_type, origin_domain, passwordlist, sha)
+    r_indicators, is_archive, r = process_payload(filename, attachment, content_type, origin_domain, passwordlist, sha)
     r['filename'] = filename
     r['content_type'] = content_type
     indicators += r_indicators
     payload_results.append(r)
-    return indicators, list(suspicious_urls), payload_results
+    return indicators, list(suspicious_urls), is_archive, payload_results
 
 
 def process_text(body, origin_domain, sha):

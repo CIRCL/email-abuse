@@ -452,7 +452,7 @@ class Payload(Module):
             logging.info("%s: Suspicious file detected: '%s'" % (self.name, self.filename))
             self.indicators += 3
             self.is_suspicious = True
-            self.reason = "is a potentially dangerous file ({}) ".format(self.filename)
+            self.reason = "{} is a potentially dangerous file".format(self.filename)
         else:
             logging.info("%s: no suspicious filenames detected" % self.name)
 

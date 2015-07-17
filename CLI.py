@@ -14,6 +14,35 @@ from rq.job import Job
 from emailabuse import store_mail, process_headers, process_content
 
 
+def print_payload_details(details):
+    if len(details) == 0:
+        return
+    if details[0]:
+        print("\t%s" % details[1])
+    print("\tType detail:\t%s" % details[2])
+    if details[3] == "da39a3ee5e6b4b0d3255bfef95601890afd80709":
+        # Empty file
+        print("\n")
+        return
+
+    print("\tSHA1 hash:\t%s" % details[3])
+    # parsers informations (*office + PDF)
+    for parser, values in list(details[5].items()):
+        if values is None:
+            continue
+        if len(values) == 5 and values[4] is not None:
+            for name, detail in values[4]:
+                print("\t%s:\t%s" % (name, detail))
+        if values[0] and values[2]:
+            # one of the parser worked, and the content is suspicious
+            print("\tSuspicious:\t%s" % values[3])
+    # VT information
+    if details[6] is not None and details[6][0]:
+        print("\tVirus Total:\t%i positive detections (total scans: %i)" % (int(details[6][1]), int(details[6][2])))
+        print("\tVT Report\t%s" % str(details[6][3].strip()))
+    print("\n")
+
+
 if __name__ == '__main__':
     argParser = argparse.ArgumentParser(description='email_abuse parser')
     argParser.add_argument('-s', '--store_path', default='store', help='Path where to store the mails and the logs')
@@ -64,7 +93,8 @@ if __name__ == '__main__':
 
     payload_results = []
     for j, result in output.items():
-        ind, urls, r = result
+        # FIXME: use is_archive
+        ind, urls, is_archive, r = result
         indicators += ind
         suspicious_urls += urls
         payload_results.append(r)
@@ -76,25 +106,13 @@ if __name__ == '__main__':
             print("Inspected component #%i:" % i)
             print("\tMime-type:\t%s" % payload['content_type'])
             print("\tFile name:\t%s" % payload['filename'])
+            print_payload_details(payload[payload['filename']])
             for key, value in payload.items():
-                if key in ['content_type', 'filename']:
+                if key in ['content_type', 'filename', payload['filename']]:
                     continue
                 if key != payload['filename']:
                     print("\t%s is an archive, contains: %s" % (payload['filename'], key))
-                print("\tSHA1 hash:\t%s" % value[3])
-                for parser, values in list(value[5].items()):
-                    if values is None:
-                        continue
-                    if len(values) == 5 and values[4] is not None:
-                        for name, detail in values[4]:
-                            print("\t%s:\t%s" % (name, detail))
-                    if values[0] and values[2]:
-                        # one of the parser worked, and the content is suspicious
-                        print("\tSuspicious:\t%s" % values[3])
-                if value[6] is not None and value[6][0]:
-                    print("\tVirus Total:\t%i positive detections (total scans: %i)" % (int(value[6][1]), int(value[6][2])))
-                    print("\tVT Report\t%s" % str(value[6][3].strip()))
-                print("\n")
+                print_payload_details(value)
     if len(suspicious_urls) > 0:
         print("List of extracted suspicious URLs:")
         for url in suspicious_urls:
